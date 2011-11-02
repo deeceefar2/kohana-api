@@ -33,6 +33,15 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 	);
 
 	/**
+	 * @var array List of extensions for response formats
+	 */
+	protected $_format_exts = array
+	(
+		'json',	// JSON Format Extension
+		'xml',	// XML Format Extension
+	);
+
+	/**
 	 * @var array List of HTTP methods which support body content
 	 */
 	protected $_methods_with_body_content = array
@@ -48,6 +57,17 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 	(
 		Http_Request::GET,
 	);
+
+
+	/**
+	 * Creates a new controller instance. Each controller must be constructed with the request object that created it.
+	 *
+	 * @return	void
+	 */
+	public function __construct(Request $request, Response $response)
+	{
+		parent::__construct($request,$response);
+	}
 
 	public function before()
 	{
@@ -128,6 +148,30 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 		$this->_prepare_response_body();
 	}
 
+	protected function _response_format() {
+
+		if ($this->request->param('format', FALSE) !== FALSE)
+		{
+			return $this->request->param('format');
+		} elseif ($this->request->param('extension', FALSE) !== FALSE) {
+			return $this->request->param('extension');
+		}
+		$types = $this->request->accept_type();
+		foreach($this->request->accept_type() as $format=>$priority) {
+			if($format=='*/*')
+				break;
+			$exts = File::exts_by_mime($format);
+			if($exts !== false) {
+				foreach($exts as $ext) {
+					if(in_array($ext,$this->_format_exts)) {
+						return $ext;
+					}
+				}
+			}
+		}
+		return $this->_format_exts[0];
+	}
+
 	/**
 	 * @todo Support more than just JSON
 	 */
@@ -135,22 +179,53 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 	{
 		try
 		{
-			// Set the correct content-type header
-			$this->response->headers('Content-Type', 'application/json');
+			switch($this->_response_format()) {
+				default:
+				case 'json':
 
-			$response = array (
-				'metadata' => $this->_response_metadata,
-				'links'    => $this->_response_links,
-				'payload'  => $this->_response_payload
-			);
+					// Set the correct content-type header
+					$this->response->headers('Content-Type', 'application/json');
 
-			// Format the reponse as JSON
-			$this->response->body(json_encode($response));
+					$response = array (
+						'metadata' => $this->_response_metadata,
+						'links'    => $this->_response_links,
+						'payload'  => array_map( create_function( '$obj', 'return is_a($obj,"ORM") ? $obj->as_array() : $obj;'), $this->_response_payload),
+					);
+
+					// Format the reponse as JSON
+					$this->response->body(json_encode($response));
+				break;
+
+				case 'xml':
+
+					// Set the correct content-type header
+					$this->response->headers('Content-Type', 'text/xml');
+
+					// Create the XML DOM
+					$dom = new DomDocument('1.0', 'UTF-8');
+					$dom->preserveWhiteSpace = false;
+					$dom->formatOutput = true;
+
+					// Create the XML root
+					$xml = $dom->appendChild($dom->createElement('root'));
+
+					xml::to_XML(
+						array(
+							'metadata' => $this->_response_metadata,
+							'links'    => $this->_response_links,
+							'payload'  => $this->_response_payload,
+						),
+						$xml
+					);
+
+					// Format the reponse as JSON
+					$this->response->body(html_entity_decode($dom->saveXML(), ENT_COMPAT, 'UTF-8'));
+				break;
+			}
 		}
 		catch (Exception $e)
 		{
-			Kohana::$log->add(Log::ERROR, 'Error while formatting response: '.$e->getMessage());
-			throw new Http_Exception_500('Error while formatting response');
+			throw $e;
 		}
 	}
 
@@ -177,15 +252,7 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 		// Execute the request
 		if (method_exists($this, $action))
 		{
-			try
-			{
-				$this->_execute($action);
-			}
-			catch (Exception $e)
-			{
-				$this->response->status(500);
-				$this->_response_payload = NULL;
-			}
+			$this->_execute($action);
 		}
 		else
 		{
@@ -201,42 +268,7 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 
 	protected function _execute($action)
 	{
-		try
-		{
-			$this->{$action}();
-		}
-		catch (HTTP_Exception $e)
-		{
-			$this->response->status($e->getCode());
-
-			$this->_response_metadata = array(
-				'error' => TRUE,
-				'type' => 'http',
-			);
-
-			$this->_response_payload = array(
-				'message' => $e->getMessage(),
-				'code'    => $e->getCode(),
-			);
-
-			$this->_response_links = array();
-		}
-		catch (Exception $e)
-		{
-			$this->response->status(500);
-
-			$this->_response_metadata = array(
-				'error' => TRUE,
-				'type' => 'exception',
-			);
-
-			$this->_response_payload = array(
-				'message' => $e->getMessage(),
-				'code'    => $e->getCode(),
-			);
-
-			$this->_response_links = array();
-		}
+		$this->{$action}();
 	}
 
 	protected function _generate_link($method, $uri, $type, $parameters = NULL)
