@@ -13,9 +13,17 @@ Response::$messages[507] = 'Insufficient Storage';
  * Routes
  */
 
-Route::set('api', 'api/<controller>(/<id>)(/<custom>)', array('id' => '\d+'))
-	->defaults(array(
-		'directory'  => 'api',
-		'id'         => FALSE,
-		'action'     => 'index',
+	Route::set('api', 'api(/<format>)(/<controller>(/<id>(/<custom>)))(.<extension>)',
+		array(
+			'id'		=> '[\w]{8}-[\w]{4}-[\w]{4}-[\w]{4}-[\w]{12}|[0-9]*|[\w]{40}',
+			'format'	=> 'json|xml',
+			'extension'	=> 'json|xml',
+		)
+	)->defaults(array(
+		'directory'	=> 'api',
+		'action'	=> 'index',
+		'id'		=> FALSE,
+		'format'	=> FALSE,
+		'custom'	=> FALSE,
+		'extension'	=> FALSE,
 	));
