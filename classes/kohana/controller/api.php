@@ -58,6 +58,8 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 		Http_Request::GET,
 	);
 
+	public $oauth_actions = array();
+
 
 	/**
 	 * Creates a new controller instance. Each controller must be constructed with the request object that created it.
@@ -189,8 +191,11 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 					$response = array (
 						'metadata' => $this->_response_metadata,
 						'links'    => $this->_response_links,
-						'payload'  => array_map( create_function( '$obj', 'return is_a($obj,"ORM") ? $obj->as_array() : $obj;'), $this->_response_payload),
 					);
+					if(is_array($this->_response_payload))
+						$response['payload'] = array_map( create_function( '$obj', 'return is_a($obj,"ORM") ? $obj->as_array() : $obj;'), $this->_response_payload);
+					else
+						$response['payload'] = '';
 
 					// Format the reponse as JSON
 					$this->response->body(json_encode($response));
@@ -268,6 +273,8 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 
 	protected function _execute($action)
 	{
+		if(array_key_exists($action, $this->oauth_actions))
+			$this->_oauth_verify_token();
 		$this->{$action}();
 	}
 
