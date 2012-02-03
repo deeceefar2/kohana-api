@@ -33,15 +33,6 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 	);
 
 	/**
-	 * @var array List of extensions for response formats
-	 */
-	protected $_format_exts = array
-	(
-		'json',	// JSON Format Extension
-		'xml',	// XML Format Extension
-	);
-
-	/**
 	 * @var array List of HTTP methods which support body content
 	 */
 	protected $_methods_with_body_content = array
@@ -56,6 +47,14 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 	protected $_cacheable_methods = array
 	(
 		Http_Request::GET,
+	);
+
+	/**
+	 * Formats allowed for output
+	 */
+	protected $_output_formats = array(
+		'json',
+		'xml',
 	);
 
 	public $oauth_actions = array();
@@ -75,21 +74,7 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 	{
 		parent::before();
 
-		$this->_parse_request();
-	}
 
-	public function after()
-	{
-		$this->_prepare_response();
-
-		parent::after();
-	}
-
-	/**
-	 * Parse the request...
-	 */
-	protected function _parse_request()
-	{
 		// Override the method if needed.
 		$this->request->method(Arr::get(
 			$_SERVER,
@@ -108,129 +93,23 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 		}
 
 		// Are we be expecting body content as part of the request?
-		if (in_array($this->request->method(), $this->_methods_with_body_content))
+		if (in_array($this->request->method(), $this->_methods_with_body_content) && $this->request->body() != '')
 		{
-			$this->_parse_request_body();
-		}
-	}
+			try
+			{
+				$this->_request_payload = json_decode($this->request->body(), TRUE);
 
-	/**
-	 * @todo Support more than just JSON
-	 */
-	protected function _parse_request_body()
-	{
-		if ($this->request->body() == '')
-			return;
-
-		try
-		{
-			$this->_request_payload = json_decode($this->request->body(), TRUE);
-
-			if ( ! is_array($this->_request_payload) AND ! is_object($this->_request_payload))
+				if ( ! is_array($this->_request_payload) AND ! is_object($this->_request_payload))
+					throw new Http_Exception_400('Invalid json supplied. \':json\'', array(
+						':json' => $this->request->body(),
+					));
+			}
+			catch (Exception $e)
+			{
 				throw new Http_Exception_400('Invalid json supplied. \':json\'', array(
 					':json' => $this->request->body(),
 				));
-		}
-		catch (Exception $e)
-		{
-			throw new Http_Exception_400('Invalid json supplied. \':json\'', array(
-				':json' => $this->request->body(),
-			));
-		}
-	}
-
-	protected function _prepare_response()
-	{
-		// Should we prevent this request from being cached?
-		if ( ! in_array($this->request->method(), $this->_cacheable_methods))
-		{
-			$this->response->headers('cache-control', 'no-cache, no-store, max-age=0, must-revalidate');
-		}
-
-		$this->_prepare_response_body();
-	}
-
-	protected function _response_format() {
-
-		if ($this->request->param('format', FALSE) !== FALSE)
-		{
-			return $this->request->param('format');
-		} elseif ($this->request->param('extension', FALSE) !== FALSE) {
-			return $this->request->param('extension');
-		}
-		$types = $this->request->accept_type();
-		foreach($this->request->accept_type() as $format=>$priority) {
-			if($format=='*/*')
-				break;
-			$exts = File::exts_by_mime($format);
-			if($exts !== false) {
-				foreach($exts as $ext) {
-					if(in_array($ext,$this->_format_exts)) {
-						return $ext;
-					}
-				}
 			}
-		}
-		return $this->_format_exts[0];
-	}
-
-	/**
-	 * @todo Support more than just JSON
-	 */
-	protected function _prepare_response_body()
-	{
-		try
-		{
-			switch($this->_response_format()) {
-				default:
-				case 'json':
-
-					// Set the correct content-type header
-					$this->response->headers('Content-Type', 'application/json');
-
-					$response = array (
-						'metadata' => $this->_response_metadata,
-						'links'    => $this->_response_links,
-					);
-					if(is_array($this->_response_payload))
-						$response['payload'] = array_map( create_function( '$obj', 'return is_a($obj,"ORM") ? $obj->as_array() : $obj;'), $this->_response_payload);
-					else
-						$response['payload'] = '';
-
-					// Format the reponse as JSON
-					$this->response->body(json_encode($response));
-				break;
-
-				case 'xml':
-
-					// Set the correct content-type header
-					$this->response->headers('Content-Type', 'text/xml');
-
-					// Create the XML DOM
-					$dom = new DomDocument('1.0', 'UTF-8');
-					$dom->preserveWhiteSpace = false;
-					$dom->formatOutput = true;
-
-					// Create the XML root
-					$xml = $dom->appendChild($dom->createElement('root'));
-
-					xml::to_XML(
-						array(
-							'metadata' => $this->_response_metadata,
-							'links'    => $this->_response_links,
-							'payload'  => $this->_response_payload,
-						),
-						$xml
-					);
-
-					// Format the reponse as JSON
-					$this->response->body(html_entity_decode($dom->saveXML(), ENT_COMPAT, 'UTF-8'));
-				break;
-			}
-		}
-		catch (Exception $e)
-		{
-			throw $e;
 		}
 	}
 
@@ -257,7 +136,9 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 		// Execute the request
 		if (method_exists($this, $action))
 		{
-			$this->_execute($action);
+			if(array_key_exists($action, $this->oauth_actions))
+				$this->_oauth_verify_token();
+			$this->{$action}();
 		}
 		else
 		{
@@ -271,37 +152,64 @@ abstract class Kohana_Controller_API extends OAuth2_Controller
 		}
 	}
 
-	protected function _execute($action)
+	public function after()
 	{
-		if(array_key_exists($action, $this->oauth_actions))
-			$this->_oauth_verify_token();
-		$this->{$action}();
+		try
+		{
+			$view = View::factory('api');
+
+			$view->set_data_tag('payload');
+			$view->set_global_tag('metadata');
+
+			// Should we prevent this request from being cached?
+			if ( ! in_array($this->request->method(), $this->_cacheable_methods))
+			{
+				$this->response->headers('cache-control', 'no-cache, no-store, max-age=0, must-revalidate');
+			}
+
+			$this->response->headers('Content-Type', File::mime_by_ext($this->_response_format()));
+
+			// Load the template
+			$view->output_format($this->_response_format());
+
+			$view->set_global($this->_response_metadata);
+			$view->set($this->_response_payload);
+
+			$this->response->body($view->render());
+
+		}
+		catch (Exception $e)
+		{
+			throw $e;
+		}
+
+		parent::after();
 	}
 
-	protected function _generate_link($method, $uri, $type, $parameters = NULL)
-	{
-		$link = array(
-			'method'     => $method,
-			'url'        => $uri,
-			'type'       => $type,
-			'parameters' => array(),
-		);
+	protected function _response_format() {
 
-		if ($parameters !== NULL)
+		if ($this->request->param('format', FALSE) !== FALSE)
 		{
-			foreach ($parameters as $search => $replace)
-			{
-				if (is_numeric($search))
-				{
-					$link['parameters'][':'.$replace] = $replace;
+			return $this->request->param('format');
+		} elseif ($this->request->param('extension', FALSE) !== FALSE) {
+			return $this->request->param('extension');
+		}
+		foreach($this->request->accept_type() as $format=>$priority) {
+			if($format == '*/*')
+				break;
+			$exts = File::exts_by_mime($format);
+			if(is_array($exts)) {
+				foreach($exts as $ext) {
+					if(in_array($ext,$this->_output_formats)) {
+						return $ext;
+					}
 				}
-				else
-				{
-					$link['parameters'][$search] = $replace;
+			} else {
+				if(in_array($exts,$this->_output_formats)) {
+					return $exts;
 				}
 			}
 		}
-
-		return $link;
+		return 'json';
 	}
 }
